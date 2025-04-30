@@ -1,0 +1,25 @@
+project_root/
+├── diarization/                      # main package
+│   ├── __init__.py
+│   ├── config.py                     # load JSON or YAML experiment configs
+│   ├── data_loader.py                # VoxConverseDataset
+│   ├── vad.py                        # VoiceActivityDetector
+│   ├── segmenter.py                  # PyannoteSegmenter
+│   ├── embedder.py                   # PyannoteEmbedder
+│   ├── clustering/                   # clustering sub-package
+│   │   ├── __init__.py
+│   │   ├── base.py                   # abstract Clusterer
+│   │   ├── ahc.py                    # AHCClusterer
+│   │   ├── spectral.py               # SpectralClusterer
+│   │   └── bhmm.py                   # BayesianHMMClusterer
+│   ├── pipeline.py                   # DiarizationPipeline
+│   ├── evaluator.py                  # DiarizationEvaluator
+│   └── utils.py                      # any helpers (audio I/O, RTTM writer)
+├── experiments/                      # scripts to launch experiments
+│   ├── run_ahc.py
+│   ├── run_spectral.py
+│   ├── run_bhmm.py
+│   └── run_pretrained.py
+├── notebooks/                        # for EDA & reporting
+├── data/                             # raw & intermediate data
+└── requirements.txt
