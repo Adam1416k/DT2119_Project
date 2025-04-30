@@ -20,6 +20,4 @@ project_root/
 │   ├── run_spectral.py
 │   ├── run_bhmm.py
 │   └── run_pretrained.py
-├── notebooks/                        # for EDA & reporting
-├── data/                             # raw & intermediate data
-└── requirements.txt
+├── Plan
