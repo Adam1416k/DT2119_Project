@@ -1,116 +1,114 @@
-# diarization/clustering/bhmm.py
+# clustering/bhmm.py
 
 import numpy as np
 import tensorflow as tf
 import tensorflow_probability as tfp
-from typing import List
+from sklearn.cluster import KMeans
 from .base import BaseClusterer
 
-tfb = tfp.bijectors
 tfd = tfp.distributions
 
 class BayesianHMMClusterer(BaseClusterer):
     """
-    HMM-based clustering using TensorFlow Probability.
-    Fits a hidden Markov model with:
-      - Categorical initial & transition distributions (learned via logits)
-      - Multivariate Normal emissions (Gaussian per state)
-    and then decodes the most likely hidden-state sequence (Viterbi).
+    A simple Bayesian HMM–based clusterer for speaker embeddings.
+    1) Use KMeans to initialize speaker labels.
+    2) Estimate initial state probs, transitions, Gaussian emissions.
+    3) Run Viterbi to get final speaker sequence.
     """
 
-    def __init__(
-        self,
-        n_states: int,
-        n_iter: int = 100,
-        learning_rate: float = 0.05,
-    ):
+    def __init__(self, n_states: int = None):
         """
-        Args:
-          n_states: number of hidden speakers/clusters
-          n_iter: number of optimization steps (Baum–Welch via gradient ascent)
-          learning_rate: for the Adam optimizer
+        :param n_states: number of hidden states (speakers). If None, defaults to 2.
         """
         self.n_states = n_states
-        self.n_iter = n_iter
-        self.learning_rate = learning_rate
+        # Will hold learned parameters after fit()
+        self.initial_log_probs_ = None      # shape (K,)
+        self.transition_log_probs_ = None   # shape (K, K)
+        self.means_ = None                  # shape (K, D)
+        self.covariances_ = None            # shape (K, D, D)
 
-    def fit_predict(self, embeddings: np.ndarray) -> List[int]:
+    def fit(self, embeddings: np.ndarray):
         """
-        Fit the HMM to the sequence of embeddings and return a list of
-        length T (n_segments), with speaker‐cluster indices {0,...,n_states-1}.
+        Estimate HMM parameters from embeddings via EM-like initialization.
+        :param embeddings: array, shape (N, D)
         """
-        # Ensure float32 and 2D: [T, D]
-        embeddings = np.asarray(embeddings, dtype=np.float32)
-        num_steps, obs_dim = embeddings.shape
+        N, D = embeddings.shape
+        K = self.n_states or 2
+        self.n_states = K
 
-        # --- 1) Define trainable parameters ---
-        # Initial and transition logits for Categorical dists
-        initial_logits = tf.Variable(
-            tf.zeros([self.n_states]), name="initial_logits"
-        )
-        transition_logits = tf.Variable(
-            tf.zeros([self.n_states, self.n_states]), name="transition_logits"
-        )
+        # 1) KMeans for an initial hard assignment
+        kmeans = KMeans(n_clusters=K, random_state=0).fit(embeddings)
+        labels = kmeans.labels_
 
-        # Emission Gaussians: per-state mean & scale
-        emission_loc = tf.Variable(
-            tf.random.normal([self.n_states, obs_dim], stddev=0.5),
-            name="emission_loc"
-        )
-        emission_scale = tfp.util.TransformedVariable(
-            initial_value=0.5 * tf.ones([self.n_states, obs_dim]),
-            bijector=tfb.Softplus(),
-            name="emission_scale"
-        )
+        # 2) Initial state log-probs (with add-1 smoothing)
+        counts = np.bincount(labels, minlength=K).astype(np.float64) + 1e-6
+        self.initial_log_probs_ = np.log(counts / counts.sum())
 
-        # --- 2) Target log-prob function ---
-        def joint_log_prob():
-            init_dist = tfd.Categorical(logits=initial_logits)
-            trans_dist = tfd.Categorical(logits=transition_logits)
-            obs_dist = tfd.MultivariateNormalDiag(
-                loc=emission_loc,
-                scale_diag=emission_scale
+        # 3) Transition log-probs
+        trans_counts = np.ones((K, K), dtype=np.float64) * 1e-6
+        for t in range(N-1):
+            trans_counts[labels[t], labels[t+1]] += 1
+        trans_norm = trans_counts / trans_counts.sum(axis=1, keepdims=True)
+        self.transition_log_probs_ = np.log(trans_norm)
+
+        # 4) Emission Gaussians: means & covariances per state
+        self.means_ = np.zeros((K, D), dtype=np.float64)
+        self.covariances_ = np.zeros((K, D, D), dtype=np.float64)
+        for k in range(K):
+            cluster_emb = embeddings[labels == k]
+            # if a cluster has only one point, fall back to global cov
+            if len(cluster_emb) < 2:
+                cluster_emb = embeddings
+            self.means_[k] = cluster_emb.mean(axis=0)
+            # empirical covariance + tiny regularizer
+            cov = np.cov(cluster_emb.T) 
+            cov += np.eye(D) * 1e-6
+            self.covariances_[k] = cov
+
+        return self
+
+    def predict(self, embeddings: np.ndarray) -> np.ndarray:
+        """
+        Run Viterbi decoding on the fitted HMM to get the most likely state per frame.
+        :param embeddings: array, shape (N, D)
+        :return: array of integer state labels, shape (N,)
+        """
+        N, D = embeddings.shape
+        K = self.n_states
+
+        # Precompute per-state log-likelihoods: shape (N, K)
+        log_likes = np.zeros((N, K), dtype=np.float64)
+        for k in range(K):
+            mvn = tfd.MultivariateNormalFullCovariance(
+                loc=self.means_[k],
+                covariance_matrix=self.covariances_[k]
             )
+            log_likes[:, k] = mvn.log_prob(embeddings).numpy()
 
-            hmm = tfd.HiddenMarkovModel(
-                initial_distribution=init_dist,
-                transition_distribution=trans_dist,
-                observation_distribution=obs_dist,
-                num_steps=num_steps
-            )
-            # tfp expects observations shape [..., num_steps, obs_dim]
-            # our embeddings is [num_steps, obs_dim], so we feed that directly.
-            return tf.reduce_sum(hmm.log_prob(embeddings))
+        # Viterbi DP tables
+        dp = np.zeros((N, K), dtype=np.float64)
+        ptr = np.zeros((N, K), dtype=np.int32)
 
-        # --- 3) Optimize parameters (approximate EM) ---
-        optimizer = tf.keras.optimizers.Adam(learning_rate=self.learning_rate)
+        # Initialization
+        dp[0] = self.initial_log_probs_ + log_likes[0]
 
-        for step in range(self.n_iter):
-            with tf.GradientTape() as tape:
-                loss = -joint_log_prob()
-            grads = tape.gradient(
-                loss,
-                [initial_logits, transition_logits,
-                 emission_loc, emission_scale.trainable_variables[0]]
-            )
-            optimizer.apply_gradients(zip(
-                grads,
-                [initial_logits, transition_logits,
-                 emission_loc, emission_scale.trainable_variables[0]]
-            ))
+        # Recursion
+        for t in range(1, N):
+            for j in range(K):
+                scores = dp[t-1] + self.transition_log_probs_[:, j]
+                ptr[t, j] = np.argmax(scores)
+                dp[t, j] = scores[ptr[t, j]] + log_likes[t, j]
 
-        # --- 4) Decode most likely state sequence ---
-        trained_hmm = tfd.HiddenMarkovModel(
-            initial_distribution=tfd.Categorical(logits=initial_logits),
-            transition_distribution=tfd.Categorical(logits=transition_logits),
-            observation_distribution=tfd.MultivariateNormalDiag(
-                loc=emission_loc,
-                scale_diag=emission_scale
-            ),
-            num_steps=num_steps
-        )
-        # posterior_mode runs Viterbi decoding
-        most_likely_states = trained_hmm.posterior_mode(embeddings)
+        # Backtrack
+        states = np.zeros(N, dtype=np.int32)
+        states[-1] = int(np.argmax(dp[-1]))
+        for t in range(N-2, -1, -1):
+            states[t] = ptr[t+1, states[t+1]]
 
-        # Convert to plain Python list of ints
-        return most_likely_states.numpy().astype(int).tolist()
+        return states
+
+    def fit_predict(self, embeddings: np.ndarray) -> np.ndarray:
+        """
+        Convenience method — estimate parameters, then decode.
+        """
+        return self.fit(embeddings).predict(embeddings)
