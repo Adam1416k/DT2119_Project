@@ -1,45 +1,69 @@
-from pyannote.audio import Pipeline
-from pyannote.core import Timeline
+from pyannote.audio import Model, Inference, Pipeline
+from pyannote.core import Annotation, Segment
+import os
+import pickle
+import json
+from data_loader import load_rttm_files
 
+AUDIO_DIR = "./data/audio/voxconverse_test_wav 4"
 
-class PyannoteSegmenter:
+def save_segments(segments, base_filename="segments"):
+    # Save to JSON
+    with open(f"{base_filename}.json", "w") as f_json:
+        json.dump(segments, f_json, indent=2)
+
+    # Save to Pickle
+    with open(f"{base_filename}.pkl", "wb") as f_pickle:
+        pickle.dump(segments, f_pickle)
+
+def segment_audio(inference: Inference, file_path: str):
     """
-    Segmentation module using a pre-trained Pyannote model.
-
-    This class wraps the Hugging Face pipeline 'pyannote/segmentation' to split
-    an input audio file into homogeneous speaker segments.
-
-    Attributes:
-        pipeline (pyannote.audio.Pipeline): Loaded segmentation pipeline.
+    Perform segmentation using the provided inference object.
     """
+    return inference(file_path)
 
-    def __init__(self, model_name: str = "pyannote/segmentation", device: str = "cpu"):
-        """
-        Initialize the segmenter with a pre-trained model.
+def extract_segments(diarization: Annotation):
+    """
+    Convert pyannote Annotation (diarization) to a list of dictionaries.
+    """
+    segments = []
+    if isinstance(diarization, Annotation):
+        for turn, _, speaker in diarization.itertracks(yield_label=True):
+            segments.append({
+                'start': float(turn.start),
+                'end': float(turn.end),
+                'duration': float(turn.duration),
+                'speaker': str(speaker)
+            })
+    else:
+        print("Diarization is not in expected format or is empty.")
 
-        Args:
-            model_name (str): Hugging Face model identifier for segmentation.
-            device (str): Device to run the model on (e.g., 'cpu' or 'cuda').
-        """
-        # Load the pre-trained segmentation pipeline
-        self.pipeline = Pipeline.from_pretrained(model_name, device=device)
+    save_segments(segments)
+    return segments
 
-    def segment(self, audio_path: str) -> Timeline:
-        """
-        Perform segmentation on an audio file.
+if __name__ == "__main__":
+    # Initialize the pipeline with the correct model
+    pipeline = Pipeline.from_pretrained(
+        "pyannote/speaker-diarization@2.1", 
+        use_auth_token="your_auth_token"
+    )
 
-        Args:
-            audio_path (str): Path to the audio file to segment.
+    # List of audio files to process
+    audio_files = [
+        "./data/audio/voxconverse_test_wav 4/aepyx.wav"
+    ]
 
-        Returns:
-            Timeline: A pyannote.core.Timeline object containing speech segments.
+    for audio_file in audio_files:
+        print(f"Running diarization on: {audio_file}")
 
-        Example:
-            segmenter = PyannoteSegmenter(device='cuda')
-            timeline = segmenter.segment('path/to/audio.wav')
-            for segment in timeline:
-                print(segment.start, segment.end)
-        """
-        # Run segmentation; the pipeline returns a Timeline of segments
-        segmentation: Timeline = self.pipeline({"audio": audio_path})
-        return segmentation
+        # Perform diarization using the pipeline
+        diarization = pipeline(audio_file)
+        print("Diarization complete:", diarization)
+
+        # Extract segments from the diarization
+        segments = extract_segments(diarization)
+
+        # Display first 5 segments
+        print(f"First 5 segments for {audio_file}:")
+        for s in segments[:5]:
+            print(s)
