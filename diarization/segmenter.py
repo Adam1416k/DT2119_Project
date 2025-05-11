@@ -1,47 +1,69 @@
+from pyannote.audio import Model, Inference, Pipeline
+from pyannote.core import Annotation, Segment
 import os
-from pydub import AudioSegment
+import pickle
+import json
 from data_loader import load_rttm_files
 
-def segment_audio(
-    rttm_segments, 
-    audio_dir='data/audio/voxconverse_test_wav 4', 
-    output_dir='data/segments'
-    ):
-    os.makedirs(output_dir, exist_ok=True)
+AUDIO_DIR = "./data/audio/voxconverse_test_wav 4"
 
-    for segment in rttm_segments:
-        wav_file = segment['file']
-        speaker = segment['speaker']
-        start_ms = int(segment['start'] * 1000)
-        end_ms = int((segment['start'] + segment['duration']) * 1000)
+def save_segments(segments, base_filename="segments"):
+    # Save to JSON
+    with open(f"{base_filename}.json", "w") as f_json:
+        json.dump(segments, f_json, indent=2)
 
-        audio_path = os.path.join(audio_dir, wav_file)
-        if not os.path.exists(audio_path):
-            print(f"Audio file not found: {audio_path}")
-            continue
+    # Save to Pickle
+    with open(f"{base_filename}.pkl", "wb") as f_pickle:
+        pickle.dump(segments, f_pickle)
 
-        # Load the audio file
-        audio = AudioSegment.from_wav(audio_path)
-        segment_audio = audio[start_ms:end_ms]
+def segment_audio(inference: Inference, file_path: str):
+    """
+    Perform segmentation using the provided inference object.
+    """
+    return inference(file_path)
 
-        # Create subfolder for the audio file inside the output directory
-        audio_file_name = os.path.splitext(wav_file)[0]  # Get the base name of the audio file
-        audio_output_dir = os.path.join(output_dir, audio_file_name)
+def extract_segments(diarization: Annotation):
+    """
+    Convert pyannote Annotation (diarization) to a list of dictionaries.
+    """
+    segments = []
+    if isinstance(diarization, Annotation):
+        for turn, _, speaker in diarization.itertracks(yield_label=True):
+            segments.append({
+                'start': float(turn.start),
+                'end': float(turn.end),
+                'duration': float(turn.duration),
+                'speaker': str(speaker)
+            })
+    else:
+        print("Diarization is not in expected format or is empty.")
 
-        # Ensure the subfolder exists
-        os.makedirs(audio_output_dir, exist_ok=True)
+    save_segments(segments)
+    return segments
 
-        # Generate the segment file name
-        segment_file_name = f"{audio_file_name}_{speaker}_{start_ms}_{end_ms}.wav"
-        segment_output_path = os.path.join(audio_output_dir, segment_file_name)
-
-        # Export the segment
-        segment_audio.export(segment_output_path, format="wav")
-        print(f"Exported segment to {segment_output_path}")
-
-# Test
 if __name__ == "__main__":
-    segments = load_rttm_files(rttm_dir="data/annotations")
-    segment_audio(segments, 
-                  audio_dir='data/audio/voxconverse_test_wav 4',
-                  output_dir='data/segments')
+    # Initialize the pipeline with the correct model
+    pipeline = Pipeline.from_pretrained(
+        "pyannote/speaker-diarization@2.1", 
+        use_auth_token="your_auth_token"
+    )
+
+    # List of audio files to process
+    audio_files = [
+        "./data/audio/voxconverse_test_wav 4/aepyx.wav"
+    ]
+
+    for audio_file in audio_files:
+        print(f"Running diarization on: {audio_file}")
+
+        # Perform diarization using the pipeline
+        diarization = pipeline(audio_file)
+        print("Diarization complete:", diarization)
+
+        # Extract segments from the diarization
+        segments = extract_segments(diarization)
+
+        # Display first 5 segments
+        print(f"First 5 segments for {audio_file}:")
+        for s in segments[:5]:
+            print(s)
