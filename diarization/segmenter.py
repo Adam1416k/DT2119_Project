@@ -1,40 +1,61 @@
 from pyannote.audio import Model, Inference
-from pyannote.core import Segment
+from pyannote.audio.pipelines import VoiceActivityDetection
 import torchaudio
 import os
-import pickle
-import json
-
-# Step 1: Load segmentation model
-from pyannote.audio import Model
-from pyannote.audio.pipelines import VoiceActivityDetection
-seg_model = Model.from_pretrained("pyannote/segmentation-3.0", use_auth_token="use_auth_token")
-
-# Step 2: Run VAD
-vad_pipeline = VoiceActivityDetection(segmentation=seg_model)
-vad_pipeline.instantiate({
-    "min_duration_on": 0.0,
-    "min_duration_off": 0.0
-})
-speech_regions = vad_pipeline("./data/audio/voxconverse_test_wav 4/aepyx.wav")  # returns pyannote.core.Annotation
-
-# Step 3: Load embedding model
-from pyannote.audio import Inference
-
-embed_model = Inference("pyannote/embedding", use_auth_token="./data/audio/voxconverse_test_wav 4/aepyx.wav")
-
-# Step 4: For each speech segment, extract embedding
-embeddings = []
-for segment in speech_regions.itersegments():
-    emb = embed_model.crop("./data/audio/voxconverse_test_wav 4/aepyx.wav", segment)
-    embeddings.append({
-        "start": segment.start,
-        "end": segment.end,
-        "embedding": emb.data.tolist()
+from dotenv import load_dotenv
+# Load environment variables from .env file
+load_dotenv("token.env")
+# Get the token securely from the environment
+HF_TOKEN = os.getenv("HF_TOKEN")
+if HF_TOKEN is None:
+    raise ValueError("Hugging Face token not found. Please set HF_TOKEN environment variable.")
+# Paths
+AUDIO_DIR = "./data/audio/voxconverse_test_wav 4"
+def process_audio():
+    # Step 1: Load segmentation model
+    seg_model = Model.from_pretrained("pyannote/segmentation-3.0", use_auth_token=HF_TOKEN)
+    vad_pipeline = VoiceActivityDetection(segmentation=seg_model)
+    vad_pipeline.instantiate({
+        "min_duration_on": 0.0,
+        "min_duration_off": 0.0
     })
-
-with open("segments.pkl", "rb") as f:
-    segments = pickle.load(f)
-
-for seg in segments:
-    print(seg)
+    # Step 2: Load embedding model
+    embed_model = Inference("pyannote/embedding", use_auth_token=HF_TOKEN)
+    all_segments = []
+    # Step 3: Loop through all wav files in the folder
+    for filename in os.listdir(AUDIO_DIR):
+        if not filename.endswith(".wav"):
+            continue
+        audio_path = os.path.join(AUDIO_DIR, filename)
+        print(f"Processing {filename}...")
+        try:
+            # Load the audio file using torchaudio to get its duration
+            waveform, sample_rate = torchaudio.load(audio_path)
+            audio_duration = waveform.size(1) / sample_rate  # duration in seconds
+            # Run VAD to detect speech segments
+            speech_regions = vad_pipeline(audio_path)  # returns pyannote.core.Annotation
+            # Extract embeddings for each speech segment
+            segments = []
+            for segment in speech_regions.itersegments():
+                # Ensure the segment is within the bounds of the audio file
+                if segment.end <= audio_duration:
+                    emb = embed_model.crop(audio_path, segment)
+                    segments.append({
+                        "start": segment.start,
+                        "end": segment.end,
+                        "embedding": emb.data.tolist()
+                    })
+                else:
+                    print(f"Skipping out-of-bounds segment in {filename}: {segment}")
+            # Add current file's segments to the all_segments list
+            all_segments.append({
+                "filename": filename,
+                "segments": segments
+            })
+            print(f"Segments for {filename} collected.")
+        except Exception as e:
+            print(f"Failed to process {filename}: {e}")
+    return all_segments
+if __name__ == "__main__":
+    all_segments = process_audio()
+    print("Segmentation complete.")

@@ -1,83 +1,60 @@
-# clustering/bhmm.py
+# diarization/clustering/bhmm.py
 
 import numpy as np
-import tensorflow as tf
 import tensorflow_probability as tfp
+import tensorflow as tf
 from sklearn.cluster import KMeans
-from .base import BaseClusterer
 
 tfd = tfp.distributions
 
-class BayesianHMMClusterer(BaseClusterer):
+class BayesianHMMClusterer:
     """
-    A simple Bayesian HMM–based clusterer for speaker embeddings.
-    1) Use KMeans to initialize speaker labels.
-    2) Estimate initial state probs, transitions, Gaussian emissions.
-    3) Run Viterbi to get final speaker sequence.
+    Simple HMM-based clusterer:
+     1) KMeans initializes hard labels.
+     2) Estimates initial, transition & Gaussian emission parameters.
+     3) Runs Viterbi to get smooth assignments.
     """
-
     def __init__(self, n_states: int = None):
-        """
-        :param n_states: number of hidden states (speakers). If None, defaults to 2.
-        """
-        self.n_states = n_states
-        # Will hold learned parameters after fit()
-        self.initial_log_probs_ = None      # shape (K,)
-        self.transition_log_probs_ = None   # shape (K, K)
-        self.means_ = None                  # shape (K, D)
-        self.covariances_ = None            # shape (K, D, D)
+        self.n_states = n_states or 2
 
     def fit(self, embeddings: np.ndarray):
-        """
-        Estimate HMM parameters from embeddings via EM-like initialization.
-        :param embeddings: array, shape (N, D)
-        """
         N, D = embeddings.shape
-        K = self.n_states or 2
-        self.n_states = K
+        K = self.n_states
 
-        # 1) KMeans for an initial hard assignment
+        # 1) initialize with KMeans
         kmeans = KMeans(n_clusters=K, random_state=0).fit(embeddings)
         labels = kmeans.labels_
 
-        # 2) Initial state log-probs (with add-1 smoothing)
-        counts = np.bincount(labels, minlength=K).astype(np.float64) + 1e-6
+        # 2) initial log‐probs
+        counts = np.bincount(labels, minlength=K).astype(float) + 1e-6
         self.initial_log_probs_ = np.log(counts / counts.sum())
 
-        # 3) Transition log-probs
-        trans_counts = np.ones((K, K), dtype=np.float64) * 1e-6
-        for t in range(N-1):
-            trans_counts[labels[t], labels[t+1]] += 1
-        trans_norm = trans_counts / trans_counts.sum(axis=1, keepdims=True)
-        self.transition_log_probs_ = np.log(trans_norm)
+        # 3) transition log‐probs
+        trans = np.ones((K, K), dtype=float) * 1e-6
+        for t in range(N - 1):
+            trans[labels[t], labels[t+1]] += 1
+        trans /= trans.sum(axis=1, keepdims=True)
+        self.transition_log_probs_ = np.log(trans)
 
-        # 4) Emission Gaussians: means & covariances per state
-        self.means_ = np.zeros((K, D), dtype=np.float64)
-        self.covariances_ = np.zeros((K, D, D), dtype=np.float64)
+        # 4) Gaussian emissions
+        self.means_ = np.zeros((K, D), float)
+        self.covariances_ = np.zeros((K, D, D), float)
         for k in range(K):
             cluster_emb = embeddings[labels == k]
-            # if a cluster has only one point, fall back to global cov
-            if len(cluster_emb) < 2:
+            if cluster_emb.shape[0] < 2:
                 cluster_emb = embeddings
             self.means_[k] = cluster_emb.mean(axis=0)
-            # empirical covariance + tiny regularizer
-            cov = np.cov(cluster_emb.T) 
-            cov += np.eye(D) * 1e-6
+            cov = np.cov(cluster_emb.T) + np.eye(D) * 1e-6
             self.covariances_[k] = cov
 
         return self
 
-    def predict(self, embeddings: np.ndarray) -> np.ndarray:
-        """
-        Run Viterbi decoding on the fitted HMM to get the most likely state per frame.
-        :param embeddings: array, shape (N, D)
-        :return: array of integer state labels, shape (N,)
-        """
+    def predict(self, embeddings: np.ndarray):
         N, D = embeddings.shape
         K = self.n_states
 
-        # Precompute per-state log-likelihoods: shape (N, K)
-        log_likes = np.zeros((N, K), dtype=np.float64)
+        # per‐state log likelihoods
+        log_likes = np.zeros((N, K), float)
         for k in range(K):
             mvn = tfd.MultivariateNormalFullCovariance(
                 loc=self.means_[k],
@@ -85,30 +62,50 @@ class BayesianHMMClusterer(BaseClusterer):
             )
             log_likes[:, k] = mvn.log_prob(embeddings).numpy()
 
-        # Viterbi DP tables
-        dp = np.zeros((N, K), dtype=np.float64)
-        ptr = np.zeros((N, K), dtype=np.int32)
-
-        # Initialization
+        # Viterbi
+        dp = np.zeros((N, K), float)
+        ptr = np.zeros((N, K), int)
         dp[0] = self.initial_log_probs_ + log_likes[0]
-
-        # Recursion
         for t in range(1, N):
             for j in range(K):
                 scores = dp[t-1] + self.transition_log_probs_[:, j]
                 ptr[t, j] = np.argmax(scores)
                 dp[t, j] = scores[ptr[t, j]] + log_likes[t, j]
 
-        # Backtrack
-        states = np.zeros(N, dtype=np.int32)
+        # backtrack
+        states = np.zeros(N, int)
         states[-1] = int(np.argmax(dp[-1]))
         for t in range(N-2, -1, -1):
             states[t] = ptr[t+1, states[t+1]]
 
         return states
 
-    def fit_predict(self, embeddings: np.ndarray) -> np.ndarray:
-        """
-        Convenience method — estimate parameters, then decode.
-        """
+    def fit_predict(self, embeddings: np.ndarray):
         return self.fit(embeddings).predict(embeddings)
+
+
+def cluster_segments(segments, n_states=None):
+    """
+    Assigns a 'speaker' label to each segment.
+    
+    :param segments: list of dicts with keys 'start', 'end', 'embedding'
+    :param n_states: number of speakers (int)
+    :return: new list of dicts with added 'speaker' field
+    """
+    if not segments:
+        return []
+
+    # stack embeddings
+    emb = np.vstack([np.array(s['embedding']) for s in segments])
+
+    # cluster
+    clusterer = BayesianHMMClusterer(n_states=n_states)
+    labels = clusterer.fit_predict(emb)
+
+    # annotate
+    out = []
+    for seg, label in zip(segments, labels):
+        new_seg = seg.copy()
+        new_seg['speaker'] = int(label)
+        out.append(new_seg)
+    return out
