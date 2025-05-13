@@ -1,11 +1,10 @@
 from pyannote.audio import Pipeline
-from config import *
+from diarization.config import *
 import torch
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-# TODO: Make uniform callsign for the other methods
 class pyannoteDiarization:
     """
     Class that serves as the interface for the pyannote pipeline.
@@ -41,6 +40,11 @@ class pyannoteDiarization:
 
         file_id = path.split("\\")[-1][:-4]  # Get file and remove .wav
 
-        # TODO: Create the correct path for saving the predicted rttm files
-        with open(file_id + ".rttm", "w") as rttm:
+        return diarization, file_id
+
+    def save_diarization(self, diarization, path):
+        """
+        Save the diarization at the provided path.
+        """
+        with open(path, "w+") as rttm:
             diarization.write_rttm(rttm)
