@@ -59,12 +59,6 @@ def process_audio():
                     })
                 else:
                     print(f"Skipping out-of-bounds segment in {filename}: {segment}")
-            
-            # Add current file's segments to the all_segments list
-            all_segments.append({
-                "filename": filename,
-                "segments": segments
-            })
 
             print(f"Segments for {filename} collected.")
 
