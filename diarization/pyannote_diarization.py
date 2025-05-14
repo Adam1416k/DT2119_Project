@@ -17,9 +17,9 @@ class pyannoteDiarization:
         """
         Load model from access token or path.
         """
-        if access_token:
+        if HF_TOKEN:
             self.pipeline = Pipeline.from_pretrained(
-                "pyannote/speaker-diarization-3.1", use_auth_token=access_token
+                "pyannote/speaker-diarization-3.1", use_auth_token=HF_TOKEN
             ).to(device)
 
         elif self.model_path != "":
