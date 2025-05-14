@@ -1,57 +1,74 @@
-import torch
 import numpy as np
-import librosa
-import pickle
+from scipy.spatial.distance import cdist
+import sys
+import os
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import silhouette_score
-from pyannote.audio import Model, Inference
-from pyannote.core import Annotation, Segment
 
-# Load segments
-with open("segments.pkl", "rb") as f:
-    segments = pickle.load(f)
+# Import process_audio from parent directory
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from segmenter import process_audio
 
-# Load audio
-audio_path = "./data/audio/voxconverse_test_wav 4/aepyx.wav"
-waveform, sample_rate = librosa.load(audio_path, sr=None)
+def perform_clustering(embeddings):
+    """
+    Perform clustering on the embeddings by determining the best number of clusters.
+    """
+    best_score = -1
+    best_n = None
+    
+    for n in range(2, 10):  # Try clustering from 2 to 9 speakers
+        clustering = AgglomerativeClustering(n_clusters=n, metric="cosine", linkage="average")
+        labels = clustering.fit_predict(embeddings)
+        
+        # Compute silhouette score to evaluate clustering quality
+        score = silhouette_score(embeddings, labels, metric="cosine")
+        
+        if score > best_score:
+            best_score = score
+            best_n = n
 
-# Load embedding model
-embedding_model = Model.from_pretrained("pyannote/embedding", use_auth_token="use_auth_token")
-inference = Inference(embedding_model, window="whole")
+    print(f"Best number of clusters (speakers): {best_n}")
 
-# Extract embeddings
-def get_embedding(segment, waveform, sample_rate):
-    start_sample = int(segment["start"] * sample_rate)
-    end_sample = int(segment["end"] * sample_rate)
-    segment_waveform = torch.tensor(waveform[start_sample:end_sample]).unsqueeze(0)
-    embedding = inference({'waveform': segment_waveform, 'sample_rate': sample_rate})
-    return np.array(embedding.data if hasattr(embedding, "data") else embedding)
+    # Final clustering with the best number of clusters
+    clustering = AgglomerativeClustering(n_clusters=best_n, metric="cosine", linkage="average")
+    cluster_labels = clustering.fit_predict(embeddings)
+    return cluster_labels
 
-embeddings = [get_embedding(seg, waveform, sample_rate) for seg in segments]
-embeddings = np.vstack(embeddings)
 
-# Agglomerative clustering
-best_score = -1
-best_n = None
-for n in range(2, 10):  # Try clustering from 2 to 9 speakers
-    clustering = AgglomerativeClustering(n_clusters=n, metric="cosine", linkage="average")
-    labels = clustering.fit_predict(embeddings)
-    score = silhouette_score(embeddings, labels, metric="cosine")
-    print(f"n_clusters={n}, silhouette={score:.4f}")
-    if score > best_score:
-        best_score = score
-        best_n = n
+def process_and_cluster_audio():
+    """
+    Process audio files, perform clustering on each file, and return the results.
+    """
+    # Run segmentation and get all segments
+    all_segments = process_audio()
 
-print(f"Best number of speakers: {best_n}")
+    clustered_results = []
+    
+    for audio_data in all_segments:
+        filename = audio_data["filename"]
+        segments = audio_data["segments"]
 
-# Final clustering with best_n
-clustering = AgglomerativeClustering(n_clusters=best_n, metric="cosine", linkage="average")
-labels = clustering.fit_predict(embeddings)
+        # Collect embeddings for the current file
+        embeddings = []
+        for seg in segments:
+            emb = np.array(seg["embedding"])
+            if emb.ndim > 1:
+                emb = emb.mean(axis=0)  # Make it 1D by averaging over time
+            embeddings.append(emb)
 
-# Build annotation
-annotation = Annotation()
-for seg, label in zip(segments, labels):
-    segment_obj = Segment(seg["start"], seg["end"])
-    annotation[segment_obj] = f"Speaker {label}"
+        embeddings = np.vstack(embeddings)
 
-print(annotation)
+        # Perform clustering (using the clustering logic)
+        cluster_labels = perform_clustering(embeddings)
+
+        # Assign cluster labels to segments
+        for idx, segment in enumerate(segments):
+            segment["cluster"] = int(cluster_labels[idx])  # Ensure the cluster label is integer
+
+        # Store the clustered result
+        clustered_results.append({
+            "filename": filename,
+            "segments": segments
+        })
+
+    return clustered_results
