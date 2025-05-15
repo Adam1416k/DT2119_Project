@@ -1,32 +1,18 @@
 import sys
 import os
-import numpy as np
-sys.path.append('/Users/mythernstrom/Documents/GitHub/DT2119_Project/diarization/clustering')
-from ahc import process_and_cluster_audio  
 
-# Paths
-AUDIO_DIR = "./data/audio/voxconverse_test_wav 4"
-OUTPUT_DIR = "./ahc_segments"
-RTTM_OUTPUT_DIR = "./rttm_files"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
-# Ensure the RTTM directory exists
-print(f"Ensuring RTTM directory exists at {RTTM_OUTPUT_DIR}")
-os.makedirs(RTTM_OUTPUT_DIR, exist_ok=True)  # Ensure the RTTM output directory exists
+from diarization.clustering.ahc import process_and_cluster_audio
+
 
 # Save RTTM files function
-def save_rttm(filename, segments, output_dir):
+def save_rttm(file_id, segments, out_file):
     # Remove the .wav extension from the filename
-    filename_without_extension = os.path.splitext(filename)[0]
-    rttm_filename = os.path.join(output_dir, f"{filename_without_extension}.rttm")
-    
-    # Check if the output directory exists, if not, create it
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    
-    print(f"Saving RTTM file to: {rttm_filename}")
-    
-    with open(rttm_filename, 'w') as f:
+
+    with open(out_file, "w") as f:
         for segment in segments:
             start = segment["start"]
             end = segment["end"]
@@ -34,18 +20,23 @@ def save_rttm(filename, segments, output_dir):
             cluster_id = f"spk{cluster:02d}"  # Convert cluster to spkXX format
             duration = end - start
             # Write with start and duration formatted to 5 decimal places
-            f.write(f"SPEAKER {filename_without_extension} 1 {start:.5f} {duration:.5f} <NA> <NA> {cluster_id} <NA> <NA>\n")
-    print(f"RTTM file saved for {filename_without_extension} at {rttm_filename}")
+            f.write(
+                f"SPEAKER {file_id} 1 {start:.5f} {duration:.5f} <NA> <NA> {cluster_id} <NA> <NA>\n"
+            )
+    # print(f"RTTM file saved for {filename_without_extension} at {rttm_filename}")
 
-# Process and cluster audio data
-all_segments = process_and_cluster_audio()
 
-# Save results as RTTM files
-for audio_data in all_segments:
-    filename = audio_data["filename"]
-    segments = audio_data["segments"]
+def run_ahc(all_data):
+    # Save RTTM Files
+    results_dir = os.path.join(PROJECT_ROOT, "results", "ahc")
+    os.makedirs(results_dir, exist_ok=True)
 
-    # Save the clustering result as an RTTM file
-    save_rttm(filename, segments, RTTM_OUTPUT_DIR)
+    all_segments = process_and_cluster_audio(all_data)
+    for audio_data in all_segments:
+        filename = audio_data["filename"]
+        segments = audio_data["segments"]
 
-print("AHC clustering and RTTM generation complete.")
+        file_id = os.path.splitext(filename)[0]
+        out_file = os.path.join(results_dir, f"{file_id}.rttm")
+
+        save_rttm(filename, segments, out_file)
