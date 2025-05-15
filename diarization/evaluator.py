@@ -1,6 +1,11 @@
 from pyannote.metrics.diarization import DiarizationErrorRate
 from pyannote.database.util import load_rttm
 
+# Suppress UserWarning: 'uem' was approximated by the union of 'reference' and 'hypothesis' extents.
+import warnings
+
+warnings.filterwarnings("ignore", category=UserWarning, module="pyannote.metrics.utils")
+
 metric = DiarizationErrorRate()
 
 
@@ -27,6 +32,6 @@ def load_and_compute_metrics(ref_path, hyp_path):
     ref_rttm = load_rttm(ref_path)
     hyp_rttm = load_rttm(hyp_path)
 
-    # Should only be one key that is the same for both files, and the key should be the file id
-    file_id = list(ref_rttm.keys())[0]
-    return compute_metrics(ref_rttm[file_id], hyp_rttm[file_id])
+    return list(ref_rttm.keys())[0], *compute_metrics(
+        ref_rttm[list(ref_rttm.keys())[0]], hyp_rttm[list(hyp_rttm.keys())[0]]
+    )
