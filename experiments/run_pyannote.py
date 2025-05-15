@@ -1,5 +1,6 @@
 import os
 import sys
+import tqdm
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
@@ -20,7 +21,13 @@ def run_pyannote():
 
     os.makedirs(res_path, exist_ok=True)
 
-    for filename in os.listdir(AUDIO_DIR):
+    pbar = tqdm.tqdm(
+        os.listdir(AUDIO_DIR),
+        total=len(os.listdir(AUDIO_DIR)),
+        desc=f"Running Pyannote Diarization",
+    )
+
+    for filename in pbar:
         if not filename.endswith(".wav"):
             continue
 
