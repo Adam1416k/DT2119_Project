@@ -7,15 +7,16 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 
+from pyannote.metrics.diarization import DiarizationErrorRate
 from diarization.evaluator import *
 
+methods = ["ahc", "bhmm", "spectral", "pyannote"]
 column_names = ["file_id", "DER", "FA", "Miss", "Conf"]
 
-data_lists = [[] for _ in range(4)]
+metrics = [DiarizationErrorRate() for _ in range(len(methods))]
 
 results_dirs = [
-    os.listdir(os.path.join(PROJECT_ROOT, "results", method))
-    for method in ["ahc", "bhmm", "spectral", "pyannote"]
+    os.listdir(os.path.join(PROJECT_ROOT, "results", method)) for method in methods
 ]
 reference_dirs = os.listdir(os.path.join(PROJECT_ROOT, "data", "test"))
 
@@ -33,27 +34,29 @@ for ref_file, ahc_file, bhmm_file, spectral_file, pyannote_file in pbar:
     hyp_paths = [
         os.path.join(PROJECT_ROOT, "results", method, file_id)
         for method, file_id in zip(
-            ["ahc", "bhmm", "spectral", "pyannote"],
+            methods,
             [ahc_file, bhmm_file, spectral_file, pyannote_file],
         )
     ]
     ref_path = os.path.join(PROJECT_ROOT, "data", "test", ref_file)
 
-    for idx, data_list in enumerate(data_lists):
+    for idx, metric in enumerate(metrics):
         try:
-            data_list.append(load_and_compute_metrics(ref_path, hyp_paths[idx]))
+            load_and_compute_metrics(ref_path, hyp_paths[idx], metric)
 
         except IndexError:
             # Will raise an index error if the output file is empty.
             pass
 
+
 means = []
 
-for data_list, method in zip(data_lists, ["ahc", "bhmm", "spectral", "pyannote"]):
-    df = pd.DataFrame(data_list, columns=column_names)
+for metric, method in zip(metrics, methods):
+    df = metric.report()
     path = os.path.join(PROJECT_ROOT, "results", method)
-    df.to_csv(path + ".csv", sep="\t")
-    means.append(df.mean(numeric_only=True))
+    df.to_csv(path + ".csv")
+    means.append(df.loc["TOTAL"])
 
-means_df = pd.DataFrame(means, index=["ahc", "bhmm", "spectral", "pyannote"])
-means_df.to_csv(os.path.join(PROJECT_ROOT, "results", "mean_results.csv"), sep="\t")
+means = pd.DataFrame(means, index=methods)
+path = os.path.join(PROJECT_ROOT, "results", "mean_results.csv")
+means.to_csv(path)
