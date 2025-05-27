@@ -41,12 +41,7 @@ for ref_file, ahc_file, bhmm_file, spectral_file, pyannote_file in pbar:
     ref_path = os.path.join(PROJECT_ROOT, "data", "test", ref_file)
 
     for idx, metric in enumerate(metrics):
-        try:
-            load_and_compute_metrics(ref_path, hyp_paths[idx], metric)
-
-        except IndexError:
-            # Will raise an index error if the output file is empty.
-            pass
+        load_and_compute_metrics(ref_path, hyp_paths[idx], metric)
 
 
 means = []
